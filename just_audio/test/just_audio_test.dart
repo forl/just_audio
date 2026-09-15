@@ -533,6 +533,31 @@ void runTests() {
     await player.dispose();
   });
 
+  test('proxy answers 404 for an unregistered path and 405 for non-GET',
+      () async {
+    final player = AudioPlayer();
+    await player.setAudioSource(TestStreamAudioSource(tag: 'registered'));
+    final registered = Uri.parse(player.icyMetadata!.info!.url!);
+
+    // A GET for a path no source claims used to throw a null-check error
+    // inside the listener (an unhandled async error) and never answer.
+    final unregistered = registered.replace(path: '/id/not-registered');
+    var response = await (await HttpClient().getUrl(unregistered)).close();
+    expect(response.statusCode, equals(HttpStatus.notFound));
+    await response.drain<void>();
+
+    // Non-GET requests were silently left hanging.
+    response = await (await HttpClient().headUrl(registered)).close();
+    expect(response.statusCode, equals(HttpStatus.methodNotAllowed));
+    await response.drain<void>();
+
+    // The registered source is still served.
+    response = await (await HttpClient().getUrl(registered)).close();
+    expect(response.statusCode, equals(HttpStatus.ok));
+    await response.drain<void>();
+    await player.dispose();
+  });
+
   test('stream-source', () async {
     final server = MockWebServer();
     await server.start();

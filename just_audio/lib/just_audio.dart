@@ -2563,17 +2563,45 @@ class _ProxyHttpServer {
     }
     _server = server;
     server.listen((request) async {
-      if (request.method == 'GET') {
-        final uriPath = _requestKey(request.uri);
-        final handler = _handlerMap[uriPath]!;
-        handler(this, request);
+      // Only GET is served. Anything else, and any GET for a path that no
+      // registered source claims, is answered and closed rather than left
+      // hanging: a stray client on the loopback interface, or a request
+      // for a source registered with another proxy instance, used to throw
+      // a null-check error out of this closure (an unhandled async error
+      // that reached the app's error reporting) while the client waited on
+      // a response that never came.
+      if (request.method != 'GET') {
+        await _respondEmpty(request, HttpStatus.methodNotAllowed);
+        return;
       }
+      final uriPath = _requestKey(request.uri);
+      final handler = _handlerMap[uriPath];
+      if (handler == null) {
+        // ignore: avoid_print
+        print('Proxy request for unregistered path ${request.uri.path} '
+            'answered 404');
+        await _respondEmpty(request, HttpStatus.notFound);
+        return;
+      }
+      handler(this, request);
     }, onDone: () {
       // A server replaced by a restart must not mark its successor stopped.
       if (identical(server, _server)) _running = false;
     }, onError: (Object e, StackTrace st) {
       if (identical(server, _server)) _running = false;
     });
+  }
+
+  /// Answers [request] with [statusCode] and an empty body, tolerating a
+  /// client that has already gone away.
+  static Future<void> _respondEmpty(HttpRequest request, int statusCode) async {
+    try {
+      request.response.statusCode = statusCode;
+      request.response.contentLength = 0;
+      await request.response.close();
+    } catch (_) {
+      // The client hung up first; there is nobody left to answer.
+    }
   }
 
   /// Stops the server
